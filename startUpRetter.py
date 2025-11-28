@@ -4,19 +4,45 @@ import requests
 from bs4 import BeautifulSoup
 
 DATABASE_FILE = "startups.db"
+CONN: sqlite3.Connection = None
 
 
 # Returns Cursor of DB and creates File if neccessary
 def connectToDb():
-    conn = sqlite3.connect(DATABASE_FILE)
-    if conn:
-        return conn.cursor()
+    global CONN
+    CONN = sqlite3.connect(DATABASE_FILE)
+    if CONN:
+        return CONN.cursor()
     else:
         raise ("Could'nt connect with db")
 
 
+# save the changes and exit db safely
+def exitFromDb():
+    global CONN
+    CONN.commit()
+    CONN.close()
+
+
+# creates if neccessary a table for the StartupTable
+
+
+def initTables(cursor):
+    cursor.execute(
+        "Create Table if not exists STARTUPS ( \
+        name varchar(100) primary key, \
+        href varchar(100), \
+        website varchar(100), \
+        telephone varchar(100), \
+        email varchar(100), \
+        year varchar(4) \
+    )"
+    )
+
+
+# first get all startups then send requests to each site and get their information
 with requests.session() as session:
-    max_pages = int(input("How many pages?"))
+    max_pages = 250
     filtered_items = {}
 
     for page in range(0, max_pages):
@@ -34,10 +60,13 @@ with requests.session() as session:
                 link.attrs
             ) == 2 and "https://www.munich-startup.de/startups/" in str(link):
                 filtered_items[link["title"]] = {
-                    "title": link["title"],
+                    "name": link["title"],
                     "href": link["href"],
                 }
 
+    print("Getting the information for each startup")
+
+    count = 0
     for startup in filtered_items:
         resp = session.get(filtered_items[startup]["href"])
 
@@ -63,8 +92,29 @@ with requests.session() as session:
         founder = soup.select(".info-card.founder-year .info-value")
         if len(founder) > 0:
             filtered_items[startup]["year"] = founder[0].text
-
-        print(filtered_items[startup])
+        count += 1
+        print(f"{count}/{len(filtered_items)} completed")
 
     print(f"Found {len(filtered_items)} startups")
-    print("Start insertion into database")
+    print("Start insertion into DB")
+
+    cursor = connectToDb()
+
+    initTables(cursor)
+
+    for startup in filtered_items:
+        resp = cursor.execute(
+            "Insert into STARTUPS (name,href,website,telephone,email,year) VALUES(?,?,?,?,?,?)",
+            (
+                filtered_items[startup]["name"],
+                filtered_items[startup]["href"],
+                filtered_items[startup]["website"],
+                filtered_items[startup]["telephone"]
+                if "telephone" in filtered_items[startup]
+                else None,
+                filtered_items[startup]["email"],
+                filtered_items[startup]["year"],
+            ),
+        )
+    exitFromDb()
+    print("Finished Insertion into DB")
