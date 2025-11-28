@@ -1,4 +1,5 @@
 import sqlite3
+import traceback
 
 import requests
 from bs4 import BeautifulSoup
@@ -28,9 +29,12 @@ def exitFromDb():
 
 
 def initTables(cursor):
+    cursor.execute("drop table if exists startups")
     cursor.execute(
-        "Create Table if not exists STARTUPS ( \
+        "Create Table STARTUPS ( \
         name varchar(100) primary key, \
+        description varchar(1000), \
+        category varchar(200), \
         href varchar(100), \
         website varchar(100), \
         telephone varchar(100), \
@@ -42,27 +46,37 @@ def initTables(cursor):
 
 # first get all startups then send requests to each site and get their information
 with requests.session() as session:
-    max_pages = 250
+    max_startups = 10  # gets automatically updated to the correct value
     filtered_items = {}
-
-    for page in range(0, max_pages):
-        print("Trying page: " + str(page))
+    page = 1
+    pagesize = 20
+    print("fetching urls to later gather additional info")
+    while len(filtered_items) < max_startups:
+        print(f"{len(filtered_items)} / {max_startups} urls fetched")
         session.cookies.clear_session_cookies()
         resp = session.get(
-            "https://www.munich-startup.de/startups/?paging=" + str(page)
+            f"https://www.munich-startup.de/wp-admin/admin-ajax.php?action=filter_startups&limit={
+                pagesize
+            }&paging={page}&ecosystem_type=startup"
         )
-        soup = BeautifulSoup(resp.text, "html.parser")
+        page += 1
 
-        items = soup.select("div div a")
+        objects = resp.json()
+        if "total" not in objects:
+            break
+        max_startups = objects["total"]
 
+        items = objects["startups"]
         for link in items:
-            if len(
-                link.attrs
-            ) == 2 and "https://www.munich-startup.de/startups/" in str(link):
-                filtered_items[link["title"]] = {
-                    "name": link["title"],
-                    "href": link["href"],
-                }
+            link = items[link]
+            filtered_items[link["title"]] = {
+                "name": link["title"],
+                "href": link["permalink"],
+                "category": link["terms"][0]["name"]
+                if link["terms"] and len(link["terms"]) > 0
+                else None,
+                "description": link["description"],
+            }
 
     print("Getting the information for each startup")
 
@@ -103,18 +117,35 @@ with requests.session() as session:
     initTables(cursor)
 
     for startup in filtered_items:
-        resp = cursor.execute(
-            "Insert into STARTUPS (name,href,website,telephone,email,year) VALUES(?,?,?,?,?,?)",
-            (
-                filtered_items[startup]["name"],
-                filtered_items[startup]["href"],
-                filtered_items[startup]["website"],
-                filtered_items[startup]["telephone"]
-                if "telephone" in filtered_items[startup]
-                else None,
-                filtered_items[startup]["email"],
-                filtered_items[startup]["year"],
-            ),
-        )
+        try:
+            resp = cursor.execute(
+                "Insert into STARTUPS (name,href,description, category, website,telephone,email,year) VALUES(?,?,?,?,?,?,?, ?)",
+                (
+                    filtered_items[startup]["name"],
+                    filtered_items[startup]["href"],
+                    filtered_items[startup]["description"]
+                    if "description" in filtered_items[startup]
+                    else None,
+                    filtered_items[startup]["category"]
+                    if "category" in filtered_items[startup]
+                    else None,
+                    filtered_items[startup]["website"]
+                    if "website" in filtered_items[startup]
+                    else None,
+                    filtered_items[startup]["telephone"]
+                    if "telephone" in filtered_items[startup]
+                    else None,
+                    filtered_items[startup]["email"]
+                    if "email" in filtered_items[startup]
+                    else None,
+                    filtered_items[startup]["year"]
+                    if "year" in filtered_items[startup]
+                    else None,
+                ),
+            )
+        except Exception as e:
+            print(f"Insertion for {filtered_items[startup]['name']} failed")
+            traceback.print_exc(e)
+
     exitFromDb()
     print("Finished Insertion into DB")
